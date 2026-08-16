@@ -17,15 +17,39 @@ BINANCE_URL = "https://fapi.binance.com"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+# Top 100 USDT perpetual futures by 24H quote volume
 TOP_COINS = 100
+
+# Minimum technical score
 MIN_SCORE = 80
 
+# Scan every 15 minutes
 SCAN_INTERVAL = 15 * 60
 
 REQUEST_TIMEOUT = 15
 
-# Maximum number of signals sent in one scan
+# Maximum signals per scan
 MAX_SIGNALS_PER_SCAN = 5
+
+# ------------------------------------------------------------
+# RISK / TP SETTINGS
+# ------------------------------------------------------------
+
+# Stop loss:
+# At least 0.75% away from entry OR 2 ATR,
+# whichever is larger.
+MIN_SL_PERCENT = 0.0075       # 0.75%
+SL_ATR_MULTIPLIER = 2.0       # 2 ATR
+
+# TP1:
+# At least 0.50% away from entry OR 1.5R,
+# whichever is larger.
+MIN_TP1_PERCENT = 0.005       # 0.50%
+TP1_R_MULTIPLIER = 1.5
+
+# TP2 and TP3
+TP2_R_MULTIPLIER = 2.5
+TP3_R_MULTIPLIER = 3.5
 
 
 # ============================================================
@@ -47,7 +71,7 @@ logger = logging.getLogger("crypto-signal-bot")
 session = requests.Session()
 
 session.headers.update({
-    "User-Agent": "CryptoSignalBot/1.0"
+    "User-Agent": "CryptoSignalBot/2.0"
 })
 
 
@@ -147,7 +171,10 @@ def get_valid_symbols():
             and item.get("quoteAsset") == "USDT"
             and item.get("status") == "TRADING"
         ):
-            symbols.add(item["symbol"])
+
+            symbols.add(
+                item["symbol"]
+            )
 
     logger.info(
         "Found %d valid USDT perpetuals.",
@@ -177,10 +204,13 @@ def get_top_symbols(valid_symbols):
             continue
 
         try:
+
             quote_volume = float(
                 item.get("quoteVolume", 0)
             )
-        except:
+
+        except Exception:
+
             continue
 
         if quote_volume <= 0:
@@ -232,6 +262,7 @@ def get_klines(
     )
 
     if not data:
+
         raise RuntimeError(
             f"No candle data for {symbol}"
         )
@@ -284,7 +315,7 @@ def calculate_indicators(df):
     df = df.copy()
 
     # --------------------------------------------------------
-    # EMA
+    # EMA 20
     # --------------------------------------------------------
 
     df["ema20"] = (
@@ -296,6 +327,10 @@ def calculate_indicators(df):
         .mean()
     )
 
+    # --------------------------------------------------------
+    # EMA 50
+    # --------------------------------------------------------
+
     df["ema50"] = (
         df["close"]
         .ewm(
@@ -304,6 +339,10 @@ def calculate_indicators(df):
         )
         .mean()
     )
+
+    # --------------------------------------------------------
+    # EMA 200
+    # --------------------------------------------------------
 
     df["ema200"] = (
         df["close"]
@@ -338,9 +377,12 @@ def calculate_indicators(df):
         adjust=False
     ).mean()
 
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan
+    rs = (
+        avg_gain /
+        avg_loss.replace(
+            0,
+            np.nan
+        )
     )
 
     df["rsi"] = (
@@ -437,13 +479,17 @@ def calculate_indicators(df):
     )
 
     # --------------------------------------------------------
-    # Candle body / volatility
+    # Candle range
     # --------------------------------------------------------
 
     df["candle_range"] = (
         df["high"] -
         df["low"]
     )
+
+    # --------------------------------------------------------
+    # ATR %
+    # --------------------------------------------------------
 
     df["atr_percent"] = (
         df["atr"] /
@@ -459,11 +505,19 @@ def calculate_indicators(df):
 
 def analyze_symbol(symbol):
 
+    # --------------------------------------------------------
+    # 15M DATA
+    # --------------------------------------------------------
+
     df15 = get_klines(
         symbol,
         "15m",
         250
     )
+
+    # --------------------------------------------------------
+    # 1H DATA
+    # --------------------------------------------------------
 
     df1h = get_klines(
         symbol,
@@ -480,12 +534,11 @@ def analyze_symbol(symbol):
     )
 
     # --------------------------------------------------------
-    # IMPORTANT:
-    # Use last CLOSED candle.
-    # -1 can still be forming.
+    # LAST CLOSED CANDLES
     # --------------------------------------------------------
 
     candle15 = df15.iloc[-2]
+
     candle1h = df1h.iloc[-2]
 
     values = [
@@ -506,6 +559,7 @@ def analyze_symbol(symbol):
         np.isfinite(x)
         for x in values
     ):
+
         return None
 
     long_score = 0
@@ -655,9 +709,6 @@ def analyze_symbol(symbol):
 
     if volume_ratio >= 1.0:
 
-        # Give volume confirmation to
-        # whichever direction is currently stronger.
-
         if long_score > short_score:
 
             long_score += 10
@@ -716,17 +767,49 @@ def analyze_symbol(symbol):
     # ========================================================
     # SL / TP
     #
-    # SL = 1.5 ATR
-    # TP1 = 1R
-    # TP2 = 2R
-    # TP3 = 3R
+    # SL:
+    #   minimum 0.75%
+    #   OR 2 ATR
+    #   whichever is larger
+    #
+    # TP1:
+    #   minimum 0.50%
+    #   OR 1.5R
+    #   whichever is larger
+    #
+    # TP2 = 2.5R
+    # TP3 = 3.5R
+    # ========================================================
+
+    minimum_sl_distance = (
+        entry *
+        MIN_SL_PERCENT
+    )
+
+    atr_sl_distance = (
+        atr *
+        SL_ATR_MULTIPLIER
+    )
+
+    sl_distance = max(
+        minimum_sl_distance,
+        atr_sl_distance
+    )
+
+    minimum_tp1_distance = (
+        entry *
+        MIN_TP1_PERCENT
+    )
+
+    # ========================================================
+    # LONG
     # ========================================================
 
     if signal == "LONG":
 
         stop_loss = (
             entry -
-            (atr * 1.5)
+            sl_distance
         )
 
         risk = (
@@ -734,15 +817,41 @@ def analyze_symbol(symbol):
             stop_loss
         )
 
-        tp1 = entry + risk
-        tp2 = entry + (risk * 2)
-        tp3 = entry + (risk * 3)
+        tp1_distance = max(
+            minimum_tp1_distance,
+            risk * TP1_R_MULTIPLIER
+        )
+
+        tp1 = (
+            entry +
+            tp1_distance
+        )
+
+        tp2 = (
+            entry +
+            (
+                risk *
+                TP2_R_MULTIPLIER
+            )
+        )
+
+        tp3 = (
+            entry +
+            (
+                risk *
+                TP3_R_MULTIPLIER
+            )
+        )
+
+    # ========================================================
+    # SHORT
+    # ========================================================
 
     else:
 
         stop_loss = (
             entry +
-            (atr * 1.5)
+            sl_distance
         )
 
         risk = (
@@ -750,9 +859,55 @@ def analyze_symbol(symbol):
             entry
         )
 
-        tp1 = entry - risk
-        tp2 = entry - (risk * 2)
-        tp3 = entry - (risk * 3)
+        tp1_distance = max(
+            minimum_tp1_distance,
+            risk * TP1_R_MULTIPLIER
+        )
+
+        tp1 = (
+            entry -
+            tp1_distance
+        )
+
+        tp2 = (
+            entry -
+            (
+                risk *
+                TP2_R_MULTIPLIER
+            )
+        )
+
+        tp3 = (
+            entry -
+            (
+                risk *
+                TP3_R_MULTIPLIER
+            )
+        )
+
+    # ========================================================
+    # CALCULATE ACTUAL PERCENTAGES
+    # ========================================================
+
+    sl_percent = (
+        abs(entry - stop_loss) /
+        entry
+    ) * 100
+
+    tp1_percent = (
+        abs(tp1 - entry) /
+        entry
+    ) * 100
+
+    tp2_percent = (
+        abs(tp2 - entry) /
+        entry
+    ) * 100
+
+    tp3_percent = (
+        abs(tp3 - entry) /
+        entry
+    ) * 100
 
     # ========================================================
     # RESULT
@@ -762,16 +917,28 @@ def analyze_symbol(symbol):
         "symbol": symbol,
         "signal": signal,
         "score": score,
+
         "entry": entry,
+
         "sl": stop_loss,
+
         "tp1": tp1,
         "tp2": tp2,
         "tp3": tp3,
+
+        "sl_percent": sl_percent,
+        "tp1_percent": tp1_percent,
+        "tp2_percent": tp2_percent,
+        "tp3_percent": tp3_percent,
+
         "rsi": rsi,
+
         "volume_ratio": volume_ratio,
+
         "atr_percent": float(
             candle15["atr_percent"]
         ),
+
         "reasons": reasons
     }
 
@@ -783,12 +950,15 @@ def analyze_symbol(symbol):
 def format_price(price):
 
     if price >= 1000:
+
         return f"{price:,.2f}"
 
     if price >= 1:
+
         return f"{price:.4f}"
 
     if price >= 0.01:
+
         return f"{price:.6f}"
 
     return f"{price:.8f}"
@@ -801,8 +971,11 @@ def format_price(price):
 def format_signal(signal):
 
     if signal["signal"] == "LONG":
+
         direction = "🟢 LONG"
+
     else:
+
         direction = "🔴 SHORT"
 
     reasons = "\n".join(
@@ -822,10 +995,15 @@ def format_signal(signal):
         f"{direction}\n"
         f"🪙 {signal['symbol']}\n\n"
 
-        f"⭐ Score: {signal['score']}/100\n"
-        f"📊 RSI: {signal['rsi']:.1f}\n"
+        f"⭐ Score: "
+        f"{signal['score']}/100\n"
+
+        f"📊 RSI: "
+        f"{signal['rsi']:.1f}\n"
+
         f"📊 Volume: "
         f"{signal['volume_ratio']:.2f}x average\n"
+
         f"📊 ATR: "
         f"{signal['atr_percent']:.2f}%\n\n"
 
@@ -833,12 +1011,22 @@ def format_signal(signal):
         f"{format_price(signal['entry'])}\n\n"
 
         "🛑 STOP LOSS\n"
-        f"{format_price(signal['sl'])}\n\n"
+        f"{format_price(signal['sl'])}\n"
+        f"Distance: "
+        f"{signal['sl_percent']:.2f}%\n\n"
 
         "🎯 TAKE PROFIT\n"
-        f"TP1: {format_price(signal['tp1'])}\n"
-        f"TP2: {format_price(signal['tp2'])}\n"
-        f"TP3: {format_price(signal['tp3'])}\n\n"
+        f"TP1: "
+        f"{format_price(signal['tp1'])} "
+        f"(+/- {signal['tp1_percent']:.2f}%)\n"
+
+        f"TP2: "
+        f"{format_price(signal['tp2'])} "
+        f"(+/- {signal['tp2_percent']:.2f}%)\n"
+
+        f"TP3: "
+        f"{format_price(signal['tp3'])} "
+        f"(+/- {signal['tp3_percent']:.2f}%)\n\n"
 
         "📈 CONFIRMATIONS\n"
         f"{reasons}\n\n"
@@ -910,7 +1098,7 @@ def scan_market(valid_symbols):
                 e
             )
 
-        # Avoid unnecessary API pressure
+        # Small delay to reduce API pressure
         time.sleep(0.08)
 
     signals.sort(
@@ -929,9 +1117,6 @@ sent_signals = {}
 
 
 def signal_key(signal):
-
-    # Round entry so tiny price differences
-    # don't create duplicate alerts.
 
     entry_bucket = round(
         signal["entry"],
@@ -957,7 +1142,7 @@ def should_send(signal):
         key
     )
 
-    # Do not repeat same setup
+    # Do not repeat the same setup
     # within 4 hours.
 
     if previous_time:
@@ -971,7 +1156,8 @@ def should_send(signal):
 
     sent_signals[key] = current_time
 
-    # Prevent memory growing forever.
+    # Prevent memory from growing forever.
+
     if len(sent_signals) > 1000:
 
         oldest = sorted(
@@ -1001,12 +1187,29 @@ def send_startup_message():
         "🪙 Universe: Top 100 by 24H volume\n"
         "⏱ Entry: 15M\n"
         "🔎 Confirmation: 1H\n"
+
         "📈 EMA: 20 / 50 / 200\n"
         "📊 RSI: 14\n"
         "📊 MACD\n"
         "📊 Volume\n"
-        "📊 ATR\n"
-        f"⭐ Minimum Score: {MIN_SCORE}/100\n\n"
+        "📊 ATR\n\n"
+
+        f"⭐ Minimum Score: "
+        f"{MIN_SCORE}/100\n"
+
+        f"🛑 Minimum SL: "
+        f"{MIN_SL_PERCENT * 100:.2f}% "
+        f"or {SL_ATR_MULTIPLIER:.1f} ATR\n"
+
+        f"🎯 Minimum TP1: "
+        f"{MIN_TP1_PERCENT * 100:.2f}% "
+        f"or {TP1_R_MULTIPLIER:.1f}R\n"
+
+        f"🎯 TP2: "
+        f"{TP2_R_MULTIPLIER:.1f}R\n"
+
+        f"🎯 TP3: "
+        f"{TP3_R_MULTIPLIER:.1f}R\n\n"
 
         "Only qualifying LONG/SHORT setups "
         "will be sent."
@@ -1039,7 +1242,10 @@ def main():
         "Starting Crypto Signal Bot..."
     )
 
+    # --------------------------------------------------------
     # Get valid symbols once at startup
+    # --------------------------------------------------------
+
     try:
 
         valid_symbols = (
@@ -1053,6 +1259,10 @@ def main():
         )
 
     send_startup_message()
+
+    # ========================================================
+    # CONTINUOUS 15-MINUTE LOOP
+    # ========================================================
 
     while True:
 
@@ -1077,12 +1287,17 @@ def main():
 
             for signal in signals:
 
-                if sent_count >= MAX_SIGNALS_PER_SCAN:
+                if (
+                    sent_count >=
+                    MAX_SIGNALS_PER_SCAN
+                ):
+
                     break
 
                 if not should_send(
                     signal
                 ):
+
                     continue
 
                 message = format_signal(
@@ -1096,7 +1311,8 @@ def main():
                     sent_count += 1
 
                     logger.info(
-                        "Sent %s %s signal. Score=%d",
+                        "Sent %s %s signal. "
+                        "Score=%d",
                         signal["symbol"],
                         signal["signal"],
                         signal["score"]
@@ -1114,6 +1330,10 @@ def main():
                 "Scan error: %s",
                 e
             )
+
+        # ----------------------------------------------------
+        # Wait until next 15-minute scan
+        # ----------------------------------------------------
 
         elapsed = (
             time.time() -

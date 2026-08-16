@@ -38,13 +38,13 @@ MAX_SIGNALS_PER_SCAN = 5
 # Stop loss:
 # At least 0.75% away from entry OR 2 ATR,
 # whichever is larger.
-MIN_SL_PERCENT = 0.0075       # 0.75%
-SL_ATR_MULTIPLIER = 2.0       # 2 ATR
+MIN_SL_PERCENT = 0.0075
+SL_ATR_MULTIPLIER = 2.0
 
 # TP1:
 # At least 0.50% away from entry OR 1.5R,
 # whichever is larger.
-MIN_TP1_PERCENT = 0.005       # 0.50%
+MIN_TP1_PERCENT = 0.005
 TP1_R_MULTIPLIER = 1.5
 
 # TP2 and TP3
@@ -535,9 +535,14 @@ def analyze_symbol(symbol):
 
     # --------------------------------------------------------
     # LAST CLOSED CANDLES
+    #
+    # -2 = latest CLOSED candle
+    # -3 = previous CLOSED candle
     # --------------------------------------------------------
 
     candle15 = df15.iloc[-2]
+
+    previous15 = df15.iloc[-3]
 
     candle1h = df1h.iloc[-2]
 
@@ -552,12 +557,51 @@ def analyze_symbol(symbol):
         candle15["atr"],
         candle15["volume_avg"],
         candle1h["ema50"],
-        candle1h["ema200"]
+        candle1h["ema200"],
+        previous15["ema20"],
+        previous15["ema50"]
     ]
 
     if not all(
         np.isfinite(x)
         for x in values
+    ):
+
+        return None
+
+    # ========================================================
+    # FRESH EMA20 / EMA50 CROSSOVER
+    # ========================================================
+    #
+    # LONG:
+    # Previous candle EMA20 <= EMA50
+    # Latest candle  EMA20 >  EMA50
+    #
+    # SHORT:
+    # Previous candle EMA20 >= EMA50
+    # Latest candle  EMA20 <  EMA50
+    #
+    # Therefore the crossover MUST have happened
+    # on the latest CLOSED 15M candle.
+    # ========================================================
+
+    fresh_long_crossover = (
+        previous15["ema20"] <= previous15["ema50"]
+        and
+        candle15["ema20"] > candle15["ema50"]
+    )
+
+    fresh_short_crossover = (
+        previous15["ema20"] >= previous15["ema50"]
+        and
+        candle15["ema20"] < candle15["ema50"]
+    )
+
+    # No fresh crossover = no signal
+    if not (
+        fresh_long_crossover
+        or
+        fresh_short_crossover
     ):
 
         return None
@@ -620,6 +664,26 @@ def analyze_symbol(symbol):
 
         short_reasons.append(
             "15M EMA20 < EMA50 < EMA200"
+        )
+
+    # ========================================================
+    # FRESH CROSSOVER SCORE
+    # ========================================================
+
+    if fresh_long_crossover:
+
+        long_score += 10
+
+        long_reasons.append(
+            "🆕 Fresh 15M EMA20/EMA50 bullish crossover"
+        )
+
+    elif fresh_short_crossover:
+
+        short_score += 10
+
+        short_reasons.append(
+            "🆕 Fresh 15M EMA20/EMA50 bearish crossover"
         )
 
     # ========================================================
@@ -768,14 +832,14 @@ def analyze_symbol(symbol):
     # SL / TP
     #
     # SL:
-    #   minimum 0.75%
-    #   OR 2 ATR
-    #   whichever is larger
+    # minimum 0.75%
+    # OR 2 ATR
+    # whichever is larger
     #
     # TP1:
-    #   minimum 0.50%
-    #   OR 1.5R
-    #   whichever is larger
+    # minimum 0.50%
+    # OR 1.5R
+    # whichever is larger
     #
     # TP2 = 2.5R
     # TP3 = 3.5R
@@ -1210,6 +1274,8 @@ def send_startup_message():
 
         f"🎯 TP3: "
         f"{TP3_R_MULTIPLIER:.1f}R\n\n"
+
+        "🆕 Fresh EMA20/EMA50 crossover required\n\n"
 
         "Only qualifying LONG/SHORT setups "
         "will be sent."

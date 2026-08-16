@@ -18,7 +18,7 @@ BINANCE_URL = "https://fapi.binance.com"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-Top 100 USDT perpetual futures by 24H quote volume
+# Top 100 USDT perpetual futures by 24H quote volume
 
 TOP_COINS = 100
 

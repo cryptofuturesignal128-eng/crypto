@@ -53,7 +53,7 @@ SL_ATR_MULTIPLIER = 2.0       # 2 ATR
 
 TP1:
 
-At least 0.50% away from entry OR 1.5R,
+# At least 0.50% away from entry OR 1.5R,
 
 whichever is larger.
 

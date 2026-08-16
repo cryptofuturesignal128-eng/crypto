@@ -17,6 +17,9 @@ BINANCE_URL = "https://fapi.binance.com"
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+TELEGRAM_TOKEN_2 = os.getenv("TELEGRAM_TOKEN_2")
+TELEGRAM_CHAT_ID_2 = os.getenv("TELEGRAM_CHAT_ID_2")
+
 # Top 100 USDT perpetual futures by 24H quote volume
 TOP_COINS = 100
 
@@ -81,50 +84,70 @@ session.headers.update({
 
 def send_telegram(message):
 
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.error("Telegram variables are missing.")
-        return False
-
-    url = (
-        f"https://api.telegram.org/bot"
-        f"{TELEGRAM_TOKEN}/sendMessage"
-    )
-
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message
-    }
-
-    try:
-
-        response = session.post(
-            url,
-            json=payload,
-            timeout=REQUEST_TIMEOUT
+    destinations = [
+        (
+            TELEGRAM_TOKEN,
+            TELEGRAM_CHAT_ID
+        ),
+        (
+            TELEGRAM_TOKEN_2,
+            TELEGRAM_CHAT_ID_2
         )
+    ]
 
-        response.raise_for_status()
+    success = False
 
-        data = response.json()
+    for token, chat_id in destinations:
 
-        if not data.get("ok"):
-            logger.error(
-                "Telegram error: %s",
-                data
+        if not token or not chat_id:
+            logger.warning(
+                "A Telegram token/chat ID is missing."
             )
-            return False
+            continue
 
-        return True
-
-    except Exception as e:
-
-        logger.error(
-            "Telegram request failed: %s",
-            e
+        url = (
+            f"https://api.telegram.org/bot"
+            f"{token}/sendMessage"
         )
 
-        return False
+        payload = {
+            "chat_id": chat_id,
+            "text": message
+        }
 
+        try:
+
+            response = session.post(
+                url,
+                json=payload,
+                timeout=REQUEST_TIMEOUT
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            if data.get("ok"):
+                success = True
+
+                logger.info(
+                    "Telegram signal sent successfully."
+                )
+
+            else:
+                logger.error(
+                    "Telegram error: %s",
+                    data
+                )
+
+        except Exception as e:
+
+            logger.error(
+                "Telegram request failed: %s",
+                e
+            )
+
+    return success
 
 # ============================================================
 # BINANCE REQUEST
@@ -1237,6 +1260,18 @@ def main():
         raise RuntimeError(
             "TELEGRAM_CHAT_ID is not set."
         )
+        
+    if not TELEGRAM_TOKEN_2:
+
+        raise RuntimeError(
+             "TELEGRAM_TOKEN_2 is not set."
+        )
+
+    if not TELEGRAM_CHAT_ID_2:
+
+        raise RuntimeError(
+             "TELEGRAM_CHAT_ID_2 is not set."
+        )  
 
     logger.info(
         "Starting Crypto Signal Bot..."
